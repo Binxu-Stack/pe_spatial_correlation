@@ -44,6 +44,7 @@ ComputeSC::ComputeSC(LAMMPS *lmp, int narg, char **arg) :
   hist(NULL), histall(NULL), typecount(NULL), icount(NULL), jcount(NULL),
   duplicates(NULL)
 {
+
   if (narg < 4) error->all(FLERR,"Illegal compute rdf command");
 
   array_flag = 1;
@@ -296,8 +297,21 @@ void ComputeSC::compute_array()
   invoked_peratom = update->ntimestep;
   if (update->eflag_atom != invoked_peratom)
     error->all(FLERR,"Per-atom energy was not tallied on needed timestep");
+  
 
   double * eatom = force->pair->eatom; // get peratom energy for pair potential
+  int natoms = static_cast<int> (atom->natoms);
+  double * eatom_all;
+  double * eatom_copy;
+  memory->create(eatom_all,natoms,"computesc: eatom_all");
+  memory->create(eatom_copy,natoms,"computesc: eatom_copy");
+  tagint *tag = atom->tag;
+  for (int i = 0; i < atom->nlocal; ++i){
+    eatom_copy[tag[i]-1] = eatom[i];
+  }
+  MPI_Allreduce(eatom_copy,eatom_all,natoms,MPI_DOUBLE,MPI_SUM,world);
+
+  // get global eatom, since j atom might be a ghost atom, and eatom[j] would be zero
 
   int i,j,m,ii,jj,inum,jnum,itype,jtype,ipair,jpair,ibin,ihisto;
   double xtmp,ytmp,ztmp,delx,dely,delz,r;
@@ -338,9 +352,6 @@ void ComputeSC::compute_array()
       sum_sq_j[i][j] = 0.;
     }
 
-  for (i = 0; i < npairs; i++)
-    for (j = 0; j < nbin; j++)
-      dot_sum[i][j] = 0;
 
   // tally the RDF
   // both atom i and j must be in fix group
@@ -393,7 +404,10 @@ void ComputeSC::compute_array()
       r = sqrt(delx*delx + dely*dely + delz*delz);
       ibin = static_cast<int> (r*delrinv);
       if (ibin >= nbin) continue;
-      e_j = eatom[j];
+
+      // j might be a ghost atom
+      tagint tag_j = atom->tag[j];
+      e_j = eatom_all[tag_j-1];
 
       for (ihisto = 0; ihisto < ipair; ihisto++) {
         m = rdfpair[ihisto][itype][jtype];
@@ -409,10 +423,10 @@ void ComputeSC::compute_array()
           m = rdfpair[ihisto][jtype][itype];
           hist[m][ibin] += 1.0;
 	  dot_sum[m][ibin] += e_i*e_j;
-	  sum_i[m][ibin] += e_i;
-	  sum_j[m][ibin] += e_j;
-	  sum_sq_i[m][ibin] += e_i*e_i;
-	  sum_sq_j[m][ibin] += e_j*e_j;
+	  sum_i[m][ibin] += e_j;
+	  sum_j[m][ibin] += e_i;
+	  sum_sq_i[m][ibin] += e_j*e_j;
+	  sum_sq_j[m][ibin] += e_i*e_i;
         }
       }
     }
@@ -488,5 +502,9 @@ void ComputeSC::compute_array()
       }
     }
   }
+
+  // Destroy  eatom info
+  memory->destroy(eatom_all);
+  memory->destroy(eatom_copy);
 }
 
